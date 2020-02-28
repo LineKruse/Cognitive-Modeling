@@ -1,0 +1,274 @@
+---
+title: "Portfolio1_script"
+author: "Line Kruse"
+date: "2/26/2020"
+output: html_document
+---
+
+
+```{r}
+setwd("~/Documents/Advanced Cognitive Modeling /Exercise1 - Forward models")
+library(pacman)
+p_load(R2jags, ggpmisc, Metrics)
+
+```
+
+
+#Run parameter recovery 
+
+```{r}
+################## Fixed model ##################
+recFixed <- paramRecFixed(100, "jagsModel1.txt")
+
+source("quick_n_clean_plots.R")
+p1 <- plot_scatter(recFixed$trueTheta, recFixed$inferredTheta)
+p1a <- plot_actual_predicted(recFixed$trueTheta, recFixed$inferredTheta)
+
+p1b <- plot_dens(recFixed$trueTheta)
+p1c <- plot_dens(recFixed$inferredTheta)
+
+
+################## Learning model ##################
+recLearn <- paramRecLearn(100, "jagsModel2.txt")
+
+p2 <- plot_scatter(recLearn$trueAlpha, recLearn$inferredAlpha)
+p2a <- plot_actual_predicted(recLearn$trueAlpha, recLearn$inferredAlpha)
+
+p3 <- plot_scatter(recLearn$trueTheta1, recLearn$inferredTheta1)
+p3a <- plot_actual_predicted(recLearn$trueTheta1, recLearn$inferredTheta1)
+
+#Parameter density plots 
+p2b <- plot_dens(recLearn$trueAlpha)
+p2c <- plot_dens(recLearn$inferredAlpha)
+
+p3b <- plot_dens(recLearn$trueTheta1)
+p3c <- plot_dens(recLearn$inferredTheta1)
+
+#Correlation between parameters
+p4 <- plot_scatter(recLearn$trueAlpha, recLearn$trueTheta1)
+p5 <- plot_scatter(recLearn$inferredAlpha, recLearn$inferredTheta1)
+
+```
+
+#Run model recovery 
+
+```{r}
+
+z <- modelRecovery(100)
+z$performance
+#Index 1 = fixed(model) fixed(data)
+#Index 2 = fixed(model) learn(data)
+#Index 3 = learn(model) learn(data)
+#Index 4 = learn(model) fixed(data)
+#1 and 3 should always be highest 
+
+
+
+######## CREATE CONFUSION MATRIX OF PROPORTION THE CORRECT MODEL WAS CHOSEN
+dic_fixed_model <- data.frame(f_data = z$DIC.fixed_fixed, ldata = z$DIC.fixed_learn)
+dic_learning_model <- data.frame(f_data = z$DIC.learn_fixed, ldata = z$DIC.learn_learn)
+
+min_dic_fmodel <- apply(dic_fixed_model, 1, which.min)
+min_dic_lmodel <- apply(dic_learning_model, 1, which.min)
+
+n_sims <- 100
+dic_df <- data.frame(predictions = c(min_dic_fmodel, min_dic_lmodel), true = c(rep('Fixed', n_sims), rep('Learning', n_sims))) %>% 
+  mutate(predictions = as.character(predictions)) %>%
+  mutate(predictions = recode(predictions, '1' = 'Fixed', '2' = 'Learning'))# %>% 
+
+devtools::install_github("ludvigolsen/cvms", ref="hparams_tuning")
+library(cvms)
+
+conf_mat <-  confusion_matrix(dic_df$true, dic_df$predictions)
+cf_mat <- conf_mat$`Confusion Matrix`[[1]]
+
+CM <- plot_confusion_matrix(cf_mat, add_row_percentages = F, add_col_percentages = T, add_normalized = T, counts_on_top = F)
+
+
+```
+
+
+###################### FUNCTIONS #########################
+
+# 1) Functions for simulating data - fixed model and learning model 
+```{r}
+################# Simulation Fixed Model #################
+simFixed <- function(theta){
+  Gfixed <- array(0, c(100)) 
+  
+  ntrials <- 100
+
+  #run the forward model 
+  for (t in 1:ntrials){
+    Gfixed[t] <- rbinom(1, 1, theta) #Create binomial distribution, one binomial trial at a time
+    
+  }
+  return(Gfixed)
+}
+
+
+################# Simulation Learning Model #################
+simLearn <- function(theta1, alpha){
+
+  Glearn <- array(0, c(100))
+  theta <- array(0, c(100)) 
+  ntrials <- 100 
+  
+  #Define the value of theta at trial 1 
+  theta[1] <- theta1
+  Glearn[1] <- rbinom(1,1,theta[1])
+  
+  #Run foward model 
+  for (t in 2:ntrials){
+    
+    theta[t] <- theta[t-1]^(1/(1+alpha)) 
+    Glearn[t] <- rbinom(1,1,theta[t]) 
+  }
+  
+  return(Glearn)
+}
+
+```
+
+# 2) Functions for making inferences from the model (infer paramaters from fitting the model to the data)
+
+```{r cars}
+
+################# Inference Function - Fixed model #################
+#G = Gfixed or Glearn
+#Model = "jagsModel1.txt", "jagsModel2.txt" 
+
+inferenceFixed <- function(G, model){
+
+  ntrials <- 100
+  data <- list("G", "ntrials") 
+  params <- c("theta") 
+  
+  samples <- jags(data, inits=NULL, params, 
+                  model.file = model, 
+                  n.chains = 3, 
+                  n.iter = 5000, 
+                  n.burnin = 1000,
+                  n.thin = 1) 
+  
+  return(samples)
+}
+
+
+################# Inference Function - Learning model #################
+inferenceLearn <- function(G, model){
+
+  ntrials <- 100
+  data <- list("G", "ntrials")
+  params <- c("theta", "theta1", "alpha")
+  
+  samples <- jags(data, inits=NULL, params, 
+                  model.file = model, 
+                  n.chains = 3, 
+                  n.iter = 5000, 
+                  n.burnin = 1000,
+                  n.thin = 1) 
+  
+  return(samples)
+}
+
+
+
+```
+
+# 3) Iterative parameter recovery functions - fixed model and learning model 
+
+```{r pressure, echo=FALSE}
+
+############### Parameter Recovery - Fixed Model  #################
+#Model = "jagsModel1.txt" or "jagsModel2.txt"
+paramRecFixed <- function(iterations, model){
+  
+  trueTheta <- c(0, c(iterations))
+  inferredTheta <- array(c(20))
+  
+  for(i in 1:iterations){
+    theta <- runif(1,0,1)
+    Gfixed <- simFixed(theta)
+    
+    samples <- inferenceFixed(Gfixed, model)
+    theta.post <- samples$BUGSoutput$sims.list$theta
+    
+    trueTheta[i] <- theta 
+    inferredTheta[i] <- density(theta.post)$x[which(density(theta.post)$y==max(density(theta.post)$y))]
+  }
+  
+  return(list(trueTheta=trueTheta, inferredTheta=inferredTheta))
+}
+
+
+
+############### Parameter Recovery - Learning Model  #################
+#Model = "jagsModel1.txt" or "jagsModel2.txt"
+paramRecLearn <- function(iterations, model){
+  trueAlpha <- c(0, c(20))
+  inferredAlpha <- array(c(20))
+
+  trueTheta1 <- c(0, c(20))
+  inferredTheta1 <- array(c(20))
+
+  for(i in 1:iterations){
+    theta1 <- runif(1,0,1)
+    alpha <- runif(1,0,1)
+    
+    Glearn <- simLearn(theta1, alpha)
+    
+    samples <- inferenceLearn(Glearn, model)
+    
+    alpha.post <- samples$BUGSoutput$sims.list$alpha 
+    inferredAlpha[i] <- density(alpha.post)$x[which(density(alpha.post)$y==max(density(alpha.post)$y))] #the MAP
+  
+    theta1.post <- samples$BUGSoutput$sims.list$theta1
+    inferredTheta1[i] <- density(theta1.post)$x[which(density(theta1.post)$y==max(density(theta1.post)$y))] #the MAP
+    
+    trueTheta1[i] <- theta1
+    trueAlpha[i] <- alpha
+  }
+  
+  return(list(trueAlpha=trueAlpha, inferredAlpha = inferredAlpha, trueTheta1=trueTheta1, inferredTheta1=inferredTheta1))
+}
+
+
+```
+
+# 4) Model recovery functions - Fixed Model and Learning Model 
+
+```{r}
+modelRecovery <- function(rounds){
+  
+  DIC.fixed_fixed <- array(0,c(rounds))
+  DIC.learn_fixed <- array(0,c(rounds))
+
+  DIC.learn_learn <- array(0,c(rounds))
+  DIC.fixed_learn <- array(0,c(rounds))
+  
+  for (i in 1:rounds){
+    theta <- runif(1,0,1)
+    Gfixed <- simFixed(theta)
+    
+    theta1 <- runif(1,0,1)
+    alpha <- runif(1,0,1)
+    Glearn <- simLearn(theta1, alpha)
+    
+    FixFixSamples <- inferenceFixed(Gfixed, "jagsModel1.txt")
+    LearnFixSamples <- inferenceLearn(Gfixed, "jagsModel2.txt")
+    
+    FixLearnSamples <- inferenceFixed(Glearn, "jagsModel1.txt")
+    LearnLearnSamples <- inferenceLearn(Glearn, "jagsModel2.txt")
+    
+    DIC.fixed_fixed[i] <- FixFixSamples$BUGSoutput$DIC
+    DIC.fixed_learn[i] <- FixLearnSamples$BUGSoutput$DIC
+    DIC.learn_learn[i] <- LearnLearnSamples$BUGSoutput$DIC
+    DIC.learn_fixed[i] <- LearnFixSamples$BUGSoutput$DIC
+
+  }
+  return(list(DIC.fixed_fixed=DIC.fixed_fixed, DIC.fixed_learn = DIC.fixed_learn, DIC.learn_learn=DIC.learn_learn, DIC.learn_fixed = DIC.learn_fixed))
+  
+}
+
+```
