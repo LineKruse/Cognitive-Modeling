@@ -1,0 +1,211 @@
+---
+title: "ORL_Model"
+author: "Line Kruse"
+date: "3/20/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+library(pacman)
+set.seed(1982)
+p_load(extraDistr, R2jags)
+setwd("~/Documents/Advanced Cognitive Modeling /Exercise3 - Iowa Gambling Task")
+
+
+```
+
+#Set up task environment
+Four decks of the Iowa Gambling Task. 
+
+```{r}
+#Bad frequent deck 
+A_R <- rep(100,10) #reward for deck A (10 trials)
+A_L <- c(rep(-250,5),rep(0,5)) #Loss for deck A - 5/10 you get big loss, 5/10 you dont loose anything.
+
+#Bad infrequent deck
+B_R <- rep(100,10)
+B_L <- c(rep(-1200,1),rep(0,9)) #1/10 you get major loss, 9/10 you dont loose anything. 
+
+#Good frequent deck 
+C_R <- rep(50,10) 
+C_L <- c(rep(-50,5),rep(0,5)) 
+
+#Good infrequent deck
+D_R <- rep(50,10)
+D_L <- c(rep(-250,1),rep(0,9)) 
+
+#Shuffle decks and store them in arrays 
+#We only shuffle the Losses because the rewards are always the same in each decl 
+
+#Outcome of A 
+A <- c()
+for(i in 1:10){
+  A <- (append(A,A_R+sample(A_L)))
+}
+
+#Outcome of B
+B <- c()
+for(i in 1:10){
+  B <- (append(B,B_R+sample(B_L)))
+}
+
+#Outcome of C
+C <- c()
+for(i in 1:10){
+  C <- (append(C,C_R+sample(C_L)))
+}
+
+#Outcome of D
+D <- c()
+for(i in 1:10){
+  D <- (append(D,D_R+sample(D_L)))
+}
+
+#Assign these values to payoff matrix 
+payoff <- cbind(A,B,C,D)
+payoff <- payoff/100
+
+```
+
+#Set parameters and run forward simulation 
+
+```{r}
+Arew <- 0.2 #learning rate for rewards 
+Apun <- 0.4 #learning rate for losses 
+betaF <- 0.5 #preference for high vs low win frequency 
+betaP <- 0.5 #preference for stay vs shift from recently chosen decks 
+K <- 2 #decay parameter, must be above 0 
+theta <- 1 #softmax inverse heat, defined as 1 in ORL model 
+
+ntrials <- 100 
+
+source("ORL_Model_function.R")
+ORL_sim <- ORL_model(payoff, ntrials, Arew, Apun, betaF, betaP, K, theta)
+
+ORL_sim$x
+ORL_sim$EV
+ORL_sim$EF
+ORL_sim$PS
+
+#Plot results - Expected Valence over time 
+#Plot results 
+par(mfrow=c(2,2))
+plot(ORL_sim$EF[,1])
+plot(ORL_sim$EF[,2])
+plot(ORL_sim$EF[,3])
+plot(ORL_sim$EF[,4])
+
+```
+
+#Fit ORL jags model - inference 
+
+```{r}
+
+x <- ORL_sim$x
+r <- ORL_sim$r
+
+data <- list("x", "r", "ntrials")
+params <- c("Arew", "Apun", "betaF", "betaP", "K")
+
+samples <- jags.parallel(data, inits = NULL, params, 
+                         model.file = "ORL_Model_jags.txt", 
+                         n.chains =3, n.iter =5000, n.burnin = 1000, n.thin = 1)
+
+
+post_Arew <- samples$BUGSoutput$sims.list$Arew
+post_Apun <- samples$BUGSoutput$sims.list$Apun
+post_BetaF <- samples$BUGSoutput$sims.list$betaF
+post_BetaP <- samples$BUGSoutput$sims.list$betaP
+post_K <- samples$BUGSoutput$sims.list$K
+
+plot_dens(post_Arew)
+plot_dens(post_Apun)
+plot_dens(post_BetaF)
+plot_dens(post_BetaP)
+plot_dens(post_K)
+
+```
+
+#Parameter recovery 
+
+```{r}
+p_load(ggplot2)
+set.seed(1982)
+source("ORL_Model_function.R")
+
+recORL <- paramRecORL(100, "ORL_Model_jags.txt")
+
+source("quick_n_clean_plots.R")
+p_Arew <- plot_actual_predicted(recORL$trueArew,recORL$inferredArew)
+
+p_Apun <- plot_actual_predicted(recORL$trueApun,recORL$inferredApun)
+
+p_betaF <- plot_actual_predicted(recORL$trueBetaF,recORL$inferredBetaF)
+
+p_betaP <- plot_actual_predicted(recORL$trueBetaP,recORL$inferredBetaP)
+
+p_K <- plot_actual_predicted(recORL$trueK,recORL$inferredK)
+
+paramRecORL <- function(iterations, model){
+  trueArew <- array(0, c(iterations))
+  inferredArew <- array(0, c(iterations))
+  
+  trueApun <- array(0, c(iterations))
+  inferredApun <- array(0, c(iterations))
+  
+  trueBetaF <- array(0, c(iterations))
+  inferredBetaF <- array(0, c(iterations))
+  
+  trueBetaP <- array(0, c(iterations))
+  inferredBetaP <- array(0, c(iterations))
+  
+  trueK <- array(0, c(iterations))
+  inferredK <- array(0, c(iterations))
+  
+  for (i in 1:iterations){
+    Arew <-runif(1,0,1)
+    Apun <-runif(1,0,1)
+    betaF <- runif(1,-2,2)
+    betaP <- runif(1,-2,2)
+    K <- runif(1,0,5)
+    theta <- 1
+    
+    #Run function and extract respones 
+    ORL_sim <- ORL_model(payoff, ntrials, Arew, Apun, betaF, betaP, K, theta)
+    x <- ORL_sim$x
+    r <- ORL_sim$r
+    
+    #Run parameter inference 
+    data <- list("x", "r", "ntrials")
+    params <- c("Arew", "Apun", "betaF", "betaP", "K")
+    samples <- jags.parallel(data, inits = NULL, params, 
+                         model.file = model, 
+                         n.chains =3, n.iter =5000, n.burnin = 1000, n.thin = 1)
+    
+    #Record values 
+    trueArew[i] <- Arew
+    trueApun[i] <- Apun
+    trueBetaF[i] <- betaF
+    trueBetaP[i] <- betaP
+    trueK[i] <- K
+    
+    post_Arew <- samples$BUGSoutput$sims.list$Arew
+    post_Apun <- samples$BUGSoutput$sims.list$Apun
+    post_BetaF <- samples$BUGSoutput$sims.list$betaF
+    post_BetaP <- samples$BUGSoutput$sims.list$betaP
+    post_K <- samples$BUGSoutput$sims.list$K
+    
+    inferredArew[i] <- density(post_Arew)$x[which(density(post_Arew)$y==max(density(post_Arew)$y))]
+    inferredApun[i] <- density(post_Apun)$x[which(density(post_Apun)$y==max(density(post_Apun)$y))]
+    inferredBetaF[i] <- density(post_BetaF)$x[which(density(post_BetaF)$y==max(density(post_BetaF)$y))]
+    inferredBetaP[i] <- density(post_BetaP)$x[which(density(post_BetaP)$y==max(density(post_BetaP)$y))]
+    inferredK[i] <- density(post_K)$x[which(density(post_K)$y==max(density(post_K)$y))]
+  }
+  
+  return(list(trueArew=trueArew, inferredArew=inferredArew, trueApun=trueApun, inferredApun=inferredApun, trueBetaF=trueBetaF, inferredBetaF=inferredBetaF, trueBetaP=trueBetaP, inferredBetaP=inferredBetaP, trueK=trueK, inferredK=inferredK))
+  
+}
+
+
+```
