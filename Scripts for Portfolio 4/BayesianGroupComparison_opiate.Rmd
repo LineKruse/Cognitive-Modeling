@@ -1,0 +1,398 @@
+---
+title: "GroupComparisons_ORL"
+author: "Line Kruse"
+date: "4/3/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+set.seed(1982)
+library(pacman)
+p_load(R2jags)
+
+```
+
+#Load control data 
+
+```{r}
+HC_data <-read.delim("~/Documents/Advanced Cognitive Modeling /Exercise 4 - Fitting data and hierarchical models/rawData/IGTdata_healthy_control.txt")
+
+#Long to wide format 
+subIDs_ctr <- unique(HC_data$subjID)
+nsubs_ctr <- length(subIDs_ctr)
+ntrials_max <- 100
+
+x_raw <- HC_data$deck #choices raw
+X_raw <- HC_data$gain + HC_data$loss #rewards (loss and rewards are tracked together in the PVL delta model)
+
+###Assign choices and rewards in a trial*subject matrix 
+#We have different numbers of trials for each subject - we fix this by padding arrays < 100 
+#We also need to record number of valid trials for each subject (no NAs)
+#Then we run the JAGS model on the valid trials only 
+
+ntrials_ctr <- array(0, c(nsubs_ctr))
+x_ctr <- array(0, c(nsubs_ctr, ntrials_max))
+X_ctr <- array(0, c(nsubs_ctr, ntrials_max))
+
+for (s in 1:nsubs_ctr){
+  
+  #Record n trials for subject s
+  ntrials_ctr[s] <- length(x_raw[HC_data$subjID==subIDs_ctr[s]])
+  
+  #Pad trials with NA if n trials < maximum (100)
+  x_sub <- x_raw[HC_data$subjID==subIDs_ctr[s]]
+  length(x_sub) <- ntrials_max
+  
+  X_sub <- X_raw[HC_data$subjID==subIDs_ctr[s]]
+  length(X_sub) <- ntrials_max
+  
+  #Assign arrays 
+  x_ctr[s,] <- x_sub 
+  X_ctr[s,] <- X_sub
+  
+}
+
+X_ctr <- X_ctr/100
+```
+
+#Load opium subjects data 
+
+```{r}
+opi_data <-read.delim("~/Documents/Advanced Cognitive Modeling /Exercise 4 - Fitting data and hierarchical models/rawData/IGTdata_heroin.txt")
+
+
+#Long to wide format 
+subIDs_opi <- unique(opi_data$subjID)
+nsubs_opi <- length(subIDs_opi)
+ntrials_max <- 100
+
+x_raw <- opi_data$deck #choices raw
+X_raw <- opi_data$gain + opi_data$loss #rewards (loss and rewards are tracked together in the PVL delta model)
+
+###Assign choices and rewards in a trial*subject matrix 
+#We have different numbers of trials for each subject - we fix this by padding arrays < 100 
+#We also need to record number of valid trials for each subject (no NAs)
+#Then we run the JAGS model on the valid trials only 
+
+ntrials_opi <- array(0, c(nsubs_opi))
+x_opi <- array(0, c(nsubs_opi, ntrials_max))
+X_opi <- array(0, c(nsubs_opi, ntrials_max))
+
+for (s in 1:nsubs_opi){
+  
+  #Record n trials for subject s
+  ntrials_opi[s] <- length(x_raw[opi_data$subjID==subIDs_opi[s]])
+  
+  #Pad trials with NA if n trials < maximum (100)
+  x_sub <- x_raw[opi_data$subjID==subIDs_opi[s]]
+  length(x_sub) <- ntrials_max
+  
+  X_sub <- X_raw[opi_data$subjID==subIDs_opi[s]]
+  length(X_sub) <- ntrials_max
+  
+  #Assign arrays 
+  x_opi[s,] <- x_sub 
+  X_opi[s,] <- X_sub
+  
+}
+
+X_opi <- X_opi/100
+```
+
+#Apply Bayesian model (outcome_ttest_opi.txt) to the data to test group difference on outcome (i.e., the rewards they got)
+
+```{r}
+#The model (txt file) tests whether the distribution for rewards_ctr is different from the distribution for rewards_opi (is the difference larger than 0). 
+#mu is the overall mean (for both groups)
+#alpha is the difference in the mean between the two groups - this should be >0. 
+#The model used here codes the hypothesis that the mean score of control group is larger than that of the opium group (control mean ~ dnorm(mu + alpha/2, lambda)) - (opium mean ~dnorm(mu - alpha/2, lambda))
+
+
+data <- list("X_ctr", "ntrials_ctr","nsubs_ctr", "X_opi", "ntrials_opi", "nsubs_opi")
+params <- c("mu", "alpha", "Smu_ctr", "Smu_opi")
+samples <- jags.parallel(data, inits=NULL, params,
+                         model.file ="outcome_ttest_opi.txt",
+                         n.chains = 3, n.iter = 5000, n.burnin = 1000, n.thin = 1)
+```
+
+#Check distributions of medians for posteriors (of the mean, mu) - for outcome (rewards) 
+
+```{r}
+#Plot density of medians 
+plot(density(samples$BUGSoutput$median$Smu_opi), xlim=c(-.16,.05), main="", col="red")
+lines(density(samples$BUGSoutput$median$Smu_ctr), col="blue")
+#shows that the subjects in the opi group on average losses more than the control group 
+```
+
+#Check posterior for difference (alpha) 
+
+```{r}
+#alpha = the difference in the mean of the two distributions (opium and control)
+plot(density.default(x=samples$BUGSoutput$sims.list$alpha))
+#Most of our belief (the peak) is in a positive direction - support the hypothesis we encoded (that control group has a larger mean score than the opium group)
+
+```
+
+#Inference using Bayes factor
+
+```{r}
+#We want to see how the posterior updates in light of new data (each trial)
+#Bayes factor compares the prior belief in alpha=0, and the posterior belief in alpha=0. #We calculate Bayes factor here using Savage-Dickey density ratio 
+#We are testing whether there is a difference or not in mean score on the IGT (not how big the difference is, or which parameter has the difference - we do that below)
+
+p_load(polspline)
+
+#Density of posterior at 0 = height of the spline at 0
+fit.posterior <- logspline(samples$BUGSoutput$sims.list$alpha)
+null.posterior <- dlogspline(0, fit.posterior)
+
+#Density of prior at 0 
+#We dont need to fit this, because we know what it is (we specified it in the jags model)
+#in jags, the prior was dnorm(0,0.1) - 0.1 is precision (not sd) in jags 
+#We have to convert the precision from jags into sd in R (1/sqrt(0.1))
+#That gives us the prior that we used in jags, just in R format 
+#And then we want the value at point 0 (the first 0 in the code below)
+null.prior <- dnorm(0,0,(1/sqrt(.1)))
+
+#Bayes factor 
+BF <- null.posterior/null.prior
+#BF = 29.13 
+#Means that our belief that the difference (alpha) is 0 has been updated by a factor of 29,13 given the data. Hence, we now believe much more strongly in a difference of 0. 
+
+```
+
+#Inferences about differences between groups on all ORL model parameters
+
+```{r}
+#We compare posterior distribution differences between the groups for each parameter of the ORL model on the IGT 
+#The hierarchichal ORL model for group comparison is coded in jags in "ORLparam_ttest_opiate.txt"
+#The difference between groups is encoded in the alpha parameter for each parameter 
+
+data <- list("x_ctr", "X_ctr", "ntrials_ctr", "nsubs_ctr", "x_opi", "X_opi", "ntrials_opi", "nsubs_opi")
+params <- c("alpha_Arew", "alpha_Apun", "alpha_K", "alpha_betaF", "alpha_betaP")
+samples <- jags.parallel(data, inits=NULL, params,
+                         model.file ="ORLparam_ttest_opiate.txt",
+                         n.chains = 3, n.iter = 5000, n.burnin = 1000, n.thin = 1)
+
+
+#Save posterior distributions 
+post_Arew <- samples$BUGSoutput$sims.list$alpha_Arew
+post_Apun <- samples$BUGSoutput$sims.list$alpha_Apun
+post_K <- samples$BUGSoutput$sims.list$alpha_K
+post_betaF <- samples$BUGSoutput$sims.list$alpha_betaF
+post_betaP <- samples$BUGSoutput$sims.list$alpha_betaP
+
+save(post_Arew, file="opi_post_Arew.RData")
+save(post_Apun, file="opi_post_Apun.RData")
+save(post_K, file="opi_post_K.RData")
+save(post_betaF, file="opi_post_betaF.RData")
+save(post_betaP, file="opi_post_betaP.RData")
+
+load("opi_post_Arew.RData") #Loded into an object called post_Arew
+load("opi_post_Apun.RData")
+load("opi_post_K.RData")
+load("opi_post_betaF.RData")
+load("opi_post_betaP.RData")
+
+```
+
+
+#Check posterior for difference (alpha) 
+
+```{r}
+p_load(ggplot2)
+#alpha = the difference in the mean of the two distributions (opium and control)
+pArew <- density.default(x=samples$BUGSoutput$sims.list$alpha_Arew)
+pApun <- density.default(x=samples$BUGSoutput$sims.list$alpha_Apun)
+pK <- density.default(x=samples$BUGSoutput$sims.list$alpha_K)
+pBetaF <- density.default(x=samples$BUGSoutput$sims.list$alpha_betaF)
+pBetaP <- density.default(x=samples$BUGSoutput$sims.list$alpha_betaP)
+
+png("GroupComparison_ORL.png")
+par(mfrow=c(2,3))
+plot(pArew, main="Learning rate rewards")
+plot(pApun, main="Learning rate losses")
+plot(pK, main="Decay")
+plot(pBetaF, main="Weight of frequency")
+plot(pBetaP, main="Weight of perseverance")
+dev.off()
+
+```
+
+#Inference using Bayes factor - ORL parameters 
+
+```{r}
+#We want to see how the posterior updates in light of new data (each trial)
+#Bayes factor compares the prior belief in alpha=0, and the posterior belief in alpha=0. #We calculate Bayes factor here using Savage-Dickey density ratio 
+#How much have the data increased/decreased or belief in the null hypothesis that there is no difference (alpha=0)
+
+
+#Density of posterior at 0 = height of the spline at 0
+fit_post_Arew <- logspline(samples$BUGSoutput$sims.list$alpha_Arew)
+fit_post_Apun <- logspline(samples$BUGSoutput$sims.list$alpha_Apun)
+fit_post_K <- logspline(samples$BUGSoutput$sims.list$alpha_K)
+fit_post_betaF <- logspline(samples$BUGSoutput$sims.list$alpha_betaF)
+fit_post_betaP <- logspline(samples$BUGSoutput$sims.list$alpha_betaP)
+
+
+null_post_Arew <- dlogspline(0, fit_post_Arew)
+null_post_Apun <- dlogspline(0, fit_post_Apun)
+null_post_K <- dlogspline(0, fit_post_K)
+null_post_betaF <- dlogspline(0, fit_post_betaF)
+null_post_betaP <- dlogspline(0, fit_post_betaP)
+
+#Density of prior at 0 
+#We dont need to fit this, because we know what it is (we specified it in the jags model)
+#in jags, the prior for all alpha parameters were dnorm(0,1) - 1 is precision (not sd) in jags 
+#We have to convert the precision from jags into sd in R (1/sqrt(1))
+#That gives us the prior that we used in jags, just in R format 
+#And then we want the value at point 0 (the first 0 in the code below)
+null_prior_Arew <- dnorm(0,0,(1/sqrt(1)))
+null_prior_Apun <- dnorm(0,0,(1/sqrt(1)))
+null_prior_K <- dnorm(0,0,(1/sqrt(1)))
+null_prior_betaF <- dnorm(0,0,(1/sqrt(1)))
+null_prior_betaP <- dnorm(0,0,(1/sqrt(1)))
+
+#Bayes factor 
+BF_Arew <- null_post_Arew/null_prior_Arew
+BF_Apun <- null_post_Apun/null_prior_Apun
+BF_K <- null_post_K/null_prior_K
+BF_betaF <- null_post_betaF/null_prior_betaF
+BF_betaP <- null_post_betaP/null_prior_betaP
+
+BF_Arew
+BF_Apun
+BF_K
+BF_betaF
+BF_betaP
+```
+
+#Plot posteriors on the priors for each parameter 
+
+```{r}
+p_load(dplyr)
+
+# Sampling from two different gaussian distributions
+prior_Arew <- rnorm(1000, mean=0, sd=(1/sqrt(1)))
+prior_Apun <- rnorm(1000, mean=0, sd=(1/sqrt(1)))
+prior_K <- rnorm(1000, mean=0, sd=(1/sqrt(1)))
+prior_betaF <- rnorm(1000, mean=0, sd=(1/sqrt(1)))
+prior_betaP <- rnorm(1000, mean=0, sd=(1/sqrt(1)))
+
+#Calculating BF and generating plot of the given distributions
+#Generates plot and BF values 
+sd_Arew <- savage_dickey(post_Arew, prior_Arew, Q = 0, plot = TRUE)
+sd_Apun <- savage_dickey(post_Apun, prior_Apun, Q = 0, plot = TRUE)
+sd_K <- savage_dickey(post_K, prior_K, Q = 0, plot = TRUE)
+sd_betaF <- savage_dickey(post_betaF, prior_betaF, Q = 0, plot = TRUE)
+sd_betaP <- savage_dickey(post_betaP, prior_betaP, Q = 0, plot = TRUE)
+
+#Create table with BF values 
+parameter <- c("Arew", "Apun", "K", "betaF", "betaP")
+BF10 <- c(sd_Arew$BF10, sd_Apun$BF10, sd_K$BF10, sd_betaF$BF10, sd_betaP$BF10)
+BF01 <- c(sd_Arew$BF01, sd_Apun$BF01, sd_K$BF01, sd_betaF$BF01, sd_betaP$BF01)
+posterior_0 <- c(sd_Arew$`Maximum a posteriori at Q`, sd_Apun$`Maximum a posteriori at Q`, sd_K$`Maximum a posteriori at Q`, sd_betaF$`Maximum a posteriori at Q`, sd_betaP$`Maximum a posteriori at Q`)
+prior_0 <- c(sd_Arew$`Maximum a priori at Q`, sd_Apun$`Maximum a priori at Q`, sd_K$`Maximum a priori at Q`, sd_betaF$`Maximum a priori at Q`, sd_betaP$`Maximum a priori at Q`)
+
+BF_values_opi <- data.frame(parameter, BF01, BF10, posterior_0, prior_0)
+write.table(BF_values_opi, file = "BF_values_opi.txt", sep = ",", quote = FALSE, row.names = F)
+
+p_load(gridExtra)
+png("BF_table_opi.png")
+p<-tableGrob(BF_values_opi)
+grid.arrange(p)
+dev.off()
+
+```
+
+#Savage-Dickey density ratio (and plot) function
+
+```{r}
+#Fra Ludvig Olsens github
+savage_dickey <- function(post, prior, Q,
+                          xlab = 'Parameter values',
+                          ylab = 'Density',
+                          plot = TRUE,
+                          print_plot = FALSE){
+  
+  
+  ##  .................. #< e3616350b525535a2bfdf402f2e6b31e ># ..................
+  ##  Check arguments                                                         ####
+  
+  
+  stopifnot(is.logical(plot),
+            is.logical(print_plot),
+            is.numeric(post) | is.integer(post),
+            is.numeric(prior) | is.integer(prior),
+            is.numeric(Q) | is.integer(Q))
+  
+  if ( !isTRUE(plot) && isTRUE(print_plot)){
+    message("'print_plot' has no effect when 'plot' is FALSE")
+  }
+  
+  ##  Maximum
+  maximum_a_posteriori = dlogspline(Q, logspline(post))
+  maximum_a_priori = dlogspline(Q, logspline(prior))
+  
+  ##  .................. #< fc3ac4bea4b5054bdda78ec4479a8730 ># ..................
+  ##  Bayes factor                                                            ####
+  
+  BF10 <-
+    maximum_a_posteriori /
+    maximum_a_priori
+  BF01 <-
+    maximum_a_priori /
+    maximum_a_posteriori
+  
+  
+  ##  .................. #< 597ccd506c1a6e9cb52cd7fca23de8d8 ># ..................
+  ##  Plot                                                                    ####
+  
+  
+  if (isTRUE(plot)){
+    
+    # Gather posterior and prior
+    results <- data.frame("posterior" = post,
+                          "prior" = prior )
+    
+    plot_ <- results %>%
+      tidyr::gather("postprior", "gathered") %>%
+      ggplot2::ggplot() +
+      ggplot2::geom_density(ggplot2::aes(gathered, fill = postprior), alpha = .5) +
+      ggplot2::labs(x=xlab, y=ylab) +
+      ggplot2::geom_vline(xintercept=Q, color='steelblue2')
+    
+    if(isTRUE(print_plot)){
+      print(plot_)
+    }
+    
+    
+    ##  .................. #< 4310b4db83cb41a819f09cb31930189a ># ..................
+    ##  Return list                                                             ####
+    
+    return(list("post_prior_plot" = plot_, "BF10" = BF10, "BF01" = BF01,
+                "Maximum a posteriori at Q" = maximum_a_posteriori,
+                "Maximum a priori at Q" = maximum_a_priori))
+    
+  } else {
+    
+    return(list("BF10" = BF10, "BF01" = BF01,
+                "Maximum a posteriori at Q" = maximum_a_posteriori,
+                "Maximum a priori at Q" = maximum_a_priori))
+  }
+}
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
