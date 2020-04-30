@@ -1,0 +1,137 @@
+model{
+
+  #Data for CC model is nagents, ntrials, index of vals, matrix of contributions (c) and average contribution (Ga)
+  #Data for EWA model is nagents, ntrials, ntokens, pi, and matrix of contributions (c)
+  
+  #Priors for mixture model (including both EWA and CC)
+  beta0 ~dnorm(0,1)
+  betaG ~dnorm(0,1)
+  
+  for (g in 1:ngroups){
+  
+    for (s in 1:groupSize[g]){
+    
+      #---------------------- Individual level priors for both models ------------------#
+      
+      ######## CC model #########
+      omega1[s,g] ~dunif(0,1)
+      lambda[s,g] ~dunif(0,1)
+      gamma[s,g] ~dunif(0,1)
+      p0[s,g] ~dunif(0,20)
+      pbeta[s,g] ~dunif(0,1)
+      
+      for (i in 1:length(vals)){
+        pvals[s,i,g] <- p0[s,g] + (pbeta[s,g]*vals[i]) #preferred contributions for each possible contribution amount
+      }
+      
+      #Values for trial 1
+      omega[s,1,g] <- omega1[s,g]
+      Gb[s,1,g] <- c[s,1,g] #assume beliefs about others on first trial is reflected in first contribution - simplication of the model 
+      mu_c[s,1,g] <- Ga[1,g]
+      
+      ######### EWA model #########
+      delta[s,g] ~dunif(0,1)
+      rho[s,g] ~dunif(0,1)
+      phi[s,g] ~dunif(0,1)
+      theta[s,g] ~dunif(0,5)
+      
+      #Values for trial 1 - priors for activations A and experience N
+      N[s,1,g] <- 1
+      
+      for (j in 1:ntokens){
+        A[s,1,j,g] <- 0
+      }
+      
+      c[s,1,g] ~dunif(0,ntokens)
+      
+    }
+    
+    #--------------------- Specify CC model ------------------#
+    for (t in 2:ntrials){
+      
+      for (s in 1:groupSize[g]){
+      
+        Gb[s,t,g] <- (gamma[s,g]*(Gb[s,t-1,g]))+((1-gamma[s,g])*(Ga[t-1,g]))
+        
+        pval_index[s,t,g] <- ifelse(round(Gb[s,t,g])>1, round(Gb[s,t,g]),1) #Necessary to avoid zero indexing 
+        
+        p[s,t,g] <- pvals[s,pval_index[s,t,g],g]
+        
+        omega[s,t,g] <- omega[s,t-1,g]*(1-lambda[s,g])
+        
+        #Departs from simulation function - data needs to be stochastic 
+        #So we don't simulate c directly, rather mean of c distribution 
+        mu_c[s,t,g] <- ((omega[s,t,g])*Gb[s,t,g]) + ((1-omega[s,t,g])*p[s,t,g])
+        
+        c_CC[s,t,g] ~dnorm(mu_c[s,t,g],0.1)
+      
+      }
+    
+    }
+    
+   #----------------- Specify EWA model ---------------- # 
+   for (t in 2:ntrials){
+   
+    for (s in 1:groupSize[g]){
+    
+      N[s,t,g] <- (rho[s,g]*N[s,t-1,g]) + 1
+      
+      for (j in 1:ntokens){
+      
+        A[s,t,j,g] <- (
+        
+          (phi[s,g]*N[s,t-1,g]*A[s,t-1,j,g]) + #prior activations 
+          (delta[s,g] + ((1-delta[s,g])*(c_choice_index[s,t-1,g]==j))) * #indicates whether jth token was chosen 
+          ((((j+Gc[s,t-1,g])*pi)/groupSize[g])-j) #calculate payoff for each possible contribution (Gc = mean of others' choice)
+          
+        )/
+        N[s,t,g] #experiece weighting 
+      
+      expA[s,t,j,g] <- exp(theta[s,g]*A[s,t,j,g])
+      
+      }
+      
+      for (j in 1:ntokens){
+        P[s,t,j,g] <- expA[s,t,j,g]/sum(expA[s,t,,g])
+      }
+    
+      c_EWA[s,t,g] ~dcat(P[s,t,,g])
+      
+    }
+   
+   }
+   
+   #--------------- Mixture model -----------------_#
+   for (s in 1:groupSize[g]){
+   
+    #reparameterised beta-binomial prior on mixture parameter 
+    #Z = 0 means EWA model, Z=1 means CC model 
+    #psy is probability of CC model 
+    #Prior for psy is re-parameterised beta distribution 
+    #Mu of prior for psy is dependent on linear effect of group size 
+    #Mu is 0,1 bounded, so probit transformation 
+    
+    probit(mu[s,g]) <- beta0 + (betaG*(groupSize[g]/100))
+    sigma[s,g] ~dunif(1,100) 
+    
+    #Re-parameterisation of beta distribution (shape1 and 2 are new parameters for beta)
+    shape1[s,g] <- mu[s,g]*sigma[s,g]
+    shape2[s,g] <- (1-mu[s,g])*sigma[s,g]
+    
+    psy[s,g] ~dbeta(shape1[s,g], shape2[s,g])
+    
+    Z[s,g] ~dbern(psy[s,g])
+    
+    for (t in 2:ntrials){
+    
+      nu_c[s,t,g] <- ifelse(Z[s,g]==1, c_CC[s,t,g], c_EWA[s,t,g])
+      
+      c[s,t,g] ~dnorm(nu_c[s,t,g], 0.1)
+    
+    }
+   
+   }
+    
+  }
+
+}
