@@ -1,0 +1,188 @@
+model{
+
+  #####Overall group priors (common to both groups)#######
+  alpha_Arew ~dnorm(0,1) #difference between groups on Arew
+  mu_Arew ~dnorm(0,1) #mean of both groups on Arew
+  lambda_Arew_ctr ~dgamma(.1,.1) #group variance on Arew - control 
+  lambda_Arew_opi ~dgamma(.1,.1) #group variance on Arew - ctrate users 
+  
+  alpha_Apun ~dnorm(0,1)
+  mu_Apun ~dnorm(0,1)
+  lambda_Apun_ctr ~dgamma(.1,.1)
+  lambda_Apun_opi ~dgamma(.1,.1)
+  
+  alpha_K ~dnorm(0,1)
+  mu_K ~dnorm(0,1)
+  lambda_K_ctr ~dgamma(.1,.1)
+  lambda_K_opi ~dgamma(.1,.1)
+  
+  alpha_betaF ~dnorm(0,1)
+  mu_betaF ~dnorm(0,1)
+  lambda_betaF_ctr ~dgamma(.1,.1)
+  lambda_betaF_opi ~dgamma(.1,.1)
+  
+  alpha_betaP ~dnorm(0,1)
+  mu_betaP ~dnorm(0,1)
+  lambda_betaP_ctr ~dgamma(.1,.1)
+  lambda_betaP_opi ~dgamma(.1,.1)
+  
+  ########## Control model ###############
+  for (s in 1:nsubs_ctr){
+  
+    #Subject level priors 
+    Arew_ctr[s] ~dnorm((mu_Arew - (alpha_Arew/2)), lambda_Arew_ctr)T(0,1)
+    Apun_ctr[s] ~dnorm((mu_Apun - (alpha_Apun/2)), lambda_Apun_ctr)T(0,1)
+    K_ctr[s] ~dnorm((mu_K - (alpha_K/2)), lambda_K_ctr)T(0,1)
+    theta_ctr[s] <- 1
+    betaF_ctr[s] ~dnorm((mu_betaF - (alpha_betaF/2)),lambda_betaF_ctr)
+    betaP_ctr[s] ~dnorm((mu_betaP - (alpha_betaP/2)), lambda_betaP_ctr)
+    
+    #Set variables at time 1 
+    EV_ctr[s,1,1] <- 0
+    EV_ctr[s,1,2] <- 0
+    EV_ctr[s,1,3] <- 0
+    EV_ctr[s,1,4] <- 0
+    
+    EF_ctr[s,1,1] <- 0
+    EF_ctr[s,1,2] <- 0
+    EF_ctr[s,1,3] <- 0
+    EF_ctr[s,1,4] <- 0
+    
+    PS_ctr[s,1,1] <- 0
+    PS_ctr[s,1,2] <- 0
+    PS_ctr[s,1,3] <- 0
+    PS_ctr[s,1,4] <- 0
+    
+    p_ctr[s,1,1] <- 0
+    p_ctr[s,1,2] <- 0
+    p_ctr[s,1,3] <- 0
+    p_ctr[s,1,4] <- 0
+    
+    for (t in 2:ntrials_ctr[s]){
+    
+      signX_ctr[s,t] <- ifelse(X_ctr[s,t-1]<0,-1,1)
+      
+      for (d in 1:4){
+      
+        #Update expected values 
+        EV_update_ctr[s,t,d] <- ifelse(X_ctr[s,t-1]>=0,
+            EV_ctr[s,t-1,d] + Arew_ctr[s]*((X_ctr[s,t-1])-EV_ctr[s,t-1,d]),
+            EV_ctr[s,t-1,d] + Apun_ctr[s]*((X_ctr[s,t-1])-EV_ctr[s,t-1,d]))
+            
+        EV_ctr[s,t,d] <- ifelse(d==x_ctr[s,t-1], 
+            EV_update_ctr[s,t,d],
+            EV_ctr[s,t-1,d])
+            
+        #Update expected frequencies 
+        EF_chosen_ctr[s,t,d] <- ifelse(X_ctr[s,t-1]>=0,
+            EF_ctr[s,t-1,d] + Arew_ctr[s]*(signX_ctr[s,t] - EF_ctr[s,t-1,d]),
+            EF_ctr[s,t-1,d] + Apun_ctr[s]*(signX_ctr[s,t] - EF_ctr[s,t-1,d]))
+            
+        EF_unchosen_ctr[s,t,d] <- ifelse(X_ctr[s,t-1]>=0,
+            EF_ctr[s,t-1,d] + Apun_ctr[s]*(-(signX_ctr[s,t]/3) - EF_ctr[s,t-1,d]),
+            EF_ctr[s,t-1,d] + Arew_ctr[s]*(-(signX_ctr[s,t]/3) - EF_ctr[s,t-1,d]))
+            
+        EF_ctr[s,t,d] <- ifelse(d==x_ctr[s,t-1],
+            EF_chosen_ctr[s,t,d],
+            EF_unchosen_ctr[s,t,d])
+      
+        #Update values and expected probabilities 
+        PS_ctr[s,t,d] <- ifelse(x_ctr[s,t-1]==d,
+            1/(1+K_ctr[s]),
+            PS_ctr[s,t-1,d]/(1+K_ctr[s]))
+        
+        v_ctr[s,t,d] <- EV_ctr[s,t,d] + (EF_ctr[s,t,d]*betaF_ctr[s]) + (PS_ctr[s,t,d]*betaP_ctr[s])
+        
+        exp_p_ctr[s,t,d] <- exp(theta_ctr[s]*v_ctr[s,t,d])
+      
+      }
+      
+      for (d in 1:4){
+        p_ctr[s,t,d] <- exp_p_ctr[s,t,d]/sum(exp_p_ctr[s,t,])
+      }
+    
+      x_ctr[s,t] ~dcat(p_ctr[s,t,])
+    }
+  }
+  
+  ############## Opiate model ###################
+  for (s in 1:nsubs_opi){
+  
+    #Subject level priors 
+    Arew_opi[s] ~dnorm((mu_Arew + (alpha_Arew/2)), lambda_Arew_opi)T(0,1)
+    Apun_opi[s] ~dnorm((mu_Apun + (alpha_Apun/2)), lambda_Apun_opi)T(0,1)
+    K_opi[s] ~dnorm((mu_K + (alpha_K/2)), lambda_K_opi)T(0,1)
+    theta_opi[s] <- 1
+    betaF_opi[s] ~dnorm((mu_betaF + (alpha_betaF/2)),lambda_betaF_opi)
+    betaP_opi[s] ~dnorm((mu_betaP + (alpha_betaP/2)), lambda_betaP_opi)
+    
+    #Set variables at time 1 
+    EV_opi[s,1,1] <- 0
+    EV_opi[s,1,2] <- 0
+    EV_opi[s,1,3] <- 0
+    EV_opi[s,1,4] <- 0
+    
+    EF_opi[s,1,1] <- 0
+    EF_opi[s,1,2] <- 0
+    EF_opi[s,1,3] <- 0
+    EF_opi[s,1,4] <- 0
+    
+    PS_opi[s,1,1] <- 0
+    PS_opi[s,1,2] <- 0
+    PS_opi[s,1,3] <- 0
+    PS_opi[s,1,4] <- 0
+    
+    p_opi[s,1,1] <- 0
+    p_opi[s,1,2] <- 0
+    p_opi[s,1,3] <- 0
+    p_opi[s,1,4] <- 0
+    
+    for (t in 2:ntrials_opi[s]){
+    
+      signX_opi[s,t] <- ifelse(X_opi[s,t-1]<0,-1,1)
+      
+      for (d in 1:4){
+      
+        #Update expected values 
+        EV_update_opi[s,t,d] <- ifelse(X_opi[s,t-1]>=0,
+            EV_opi[s,t-1,d] + Arew_opi[s]*((X_opi[s,t-1])-EV_opi[s,t-1,d]),
+            EV_opi[s,t-1,d] + Apun_opi[s]*((X_opi[s,t-1])-EV_opi[s,t-1,d]))
+            
+        EV_opi[s,t,d] <- ifelse(d==x_opi[s,t-1], 
+            EV_update_opi[s,t,d],
+            EV_opi[s,t-1,d])
+            
+        #Update expected frequencies 
+        EF_chosen_opi[s,t,d] <- ifelse(X_opi[s,t-1]>=0,
+            EF_opi[s,t-1,d] + Arew_opi[s]*(signX_opi[s,t] - EF_opi[s,t-1,d]),
+            EF_opi[s,t-1,d] + Apun_opi[s]*(signX_opi[s,t] - EF_opi[s,t-1,d]))
+            
+        EF_unchosen_opi[s,t,d] <- ifelse(X_opi[s,t-1]>=0,
+            EF_opi[s,t-1,d] + Apun_opi[s]*(-(signX_opi[s,t]/3) - EF_opi[s,t-1,d]),
+            EF_opi[s,t-1,d] + Arew_opi[s]*(-(signX_opi[s,t]/3) - EF_opi[s,t-1,d]))
+            
+        EF_opi[s,t,d] <- ifelse(d==x_opi[s,t-1],
+            EF_chosen_opi[s,t,d],
+            EF_unchosen_opi[s,t,d])
+      
+        #Update values and expected probabilities 
+        PS_opi[s,t,d] <- ifelse(x_opi[s,t-1]==d,
+            1/(1+K_opi[s]),
+            PS_opi[s,t-1,d]/(1+K_opi[s]))
+        
+        v_opi[s,t,d] <- EV_opi[s,t,d] + (EF_opi[s,t,d]*betaF_opi[s]) + (PS_opi[s,t,d]*betaP_opi[s])
+        
+        exp_p_opi[s,t,d] <- exp(theta_opi[s]*v_opi[s,t,d])
+      
+      }
+      
+      for (d in 1:4){
+        p_opi[s,t,d] <- exp_p_opi[s,t,d]/sum(exp_p_opi[s,t,])
+      }
+    
+      x_opi[s,t] ~dcat(p_opi[s,t,])
+    }
+  }
+  
+  
+}
