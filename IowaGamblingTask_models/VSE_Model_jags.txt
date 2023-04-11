@@ -1,0 +1,56 @@
+model{ 
+
+  theta ~ dnorm(0,0.1)T(0,1)
+  delta ~ dnorm(0,1)T(0,1)
+  a ~ dnorm(0,1)T(0,1)
+  phi ~ dnorm(0,0.1)
+  C ~ dnorm(0,1)T(0,5)
+  
+  Exploit[1,1] <- 0
+  Exploit[1,2] <- 0
+  Exploit[1,3] <- 0
+  Exploit[1,4] <- 0
+  
+  Explore[1,1] <- 0
+  Explore[1,2] <- 0
+  Explore[1,3] <- 0
+  Explore[1,4] <- 0
+  
+  # prob of choosing each deck on first trial
+  p[1,1] = .25
+  p[1,2] = .25
+  p[1,3] = .25
+  p[1,4] = .25
+  
+  x[1] ~ dcat(p[1,])
+  
+  for (t in 2:ntrials){
+    
+    v[t-1] <- r[t-1]^theta - l[t-1]^theta
+    
+    for (k in 1:4){
+      
+      #Value learning function 
+      Exploit[t,k] <- ifelse(x[t-1]==k,
+                             Exploit[t-1,k]*delta+v[t-1],
+                             Exploit[t-1,k]*delta)
+      
+      #Sequential exploration function 
+      Explore[t,k] <- ifelse(x[t-1]==k,
+                             0,
+                             Explore[t-1,k]+a*(phi-Explore[t-1,k]))
+      
+      #Apply softmax (using both Explore and Exploit values)
+      exp_p[t,k] <- exp(Explore[t,k]+Exploit[t,k]*C)
+      
+    }
+    
+    for (k in 1:4){
+      p[t,k] <- exp_p[t,k]/sum(exp_p[t,]) #apply softmax function 
+    }
+    
+    x[t] ~ dcat(p[t,]) 
+    
+  }
+
+}

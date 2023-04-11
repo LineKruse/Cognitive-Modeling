@@ -1,0 +1,87 @@
+model{
+  
+  Arew ~ dnorm(0,1)T(0,1)
+  Apun ~ dnorm(0,1)T(0,1)
+  betaF ~ dnorm(0,0.1) # the expected value of outcomes against the expected frequency of outcomes
+  betaP ~ dnorm(0,0.1) # weight of perseverance tendency
+  K ~ dnorm(0,1)T(0,5)# decay parameter for the perseverance equation
+  
+  theta <-1
+  
+  # setting values/priors for first trial
+  EV[1,1] ~ dnorm(0,0.1) # trial 1, deck 1
+  EV[1,2] ~ dnorm(0,0.1)
+  EV[1,3] ~ dnorm(0,0.1)
+  EV[1,4] ~ dnorm(0,0.1)
+  
+  EF[1,1] ~ dnorm(0,0.1) # trial 1, deck 1
+  EF[1,2] ~ dnorm(0,0.1)
+  EF[1,3] ~ dnorm(0,0.1)
+  EF[1,4] ~ dnorm(0,0.1)
+  
+  PS[1,1] <- 1
+  PS[1,2] <- 1
+  PS[1,3] <- 1
+  PS[1,4] <- 1
+  
+  # prob of choosing each deck on first trial
+  p[1,1] = .25
+  p[1,2] = .25
+  p[1,3] = .25
+  p[1,4] = .25
+  
+  EF_unchosen[1,1] <- 1
+  EF_unchosen[1,2] <- 1
+  EF_unchosen[1,3] <- 1
+  EF_unchosen[1,4] <- 1
+  
+  x[1] ~ dcat(p[1,])
+  
+  K_new <-(3^K)-1
+  
+  for (t in 2:ntrials){
+    
+    signX[t] <-ifelse(r[t-1]==0, 0, ifelse(r[t-1]<0, -1, 1))
+    
+    for (k in 1:4){
+      
+      #Update Expected Value, EV
+      EV_update[t,k] <- ifelse(r[t-1]>=0, 
+                               EV[t-1,k]+Arew*(r[t-1] - EV[t-1,k]),
+                               EV[t-1,k]+Apun*(r[t-1] - EV[t-1,k]))
+      
+      EV[t,k] <- ifelse(x[t-1]==k, EV_update[t,k], EV[t-1,k])
+      
+      #Update Expected Frequency (different for chosen and unchosen decks)
+      EF_chosen[t,k] <- ifelse(r[t-1]>=0,
+                               EF[t-1,k]+Arew*(signX[t]-EF[t-1,k]),
+                               EF[t-1,k]+Apun*(signX[t]-EF[t-1,k]))
+      
+      EF_unchosen[t,k] <- ifelse(r[t-1]>=0,
+                                 EF[t-1,k]+Apun*((-signX[t]/3)-EF[t-1,k]),
+                                 EF[t-1,k]+Arew*((-signX[t]/3)-EF[t-1,k]))
+      
+      EF[t,k] <- ifelse(x[t-1]==k, EF_chosen[t,k], EF_unchosen[t,k])
+      
+      #Update Perseverancce, PS (different for chosen and unchosen decks)
+      PS[t,k] <- ifelse(x[t-1]==k,
+                        1/(1+K_new),          #chosen decks
+                        PS[t-1,k]/(1+K_new))  #unchosen decks 
+      
+      #Update Valence, V, for each deck 
+      V[t,k] <- EV[t,k] + EF[t,k]*betaF + PS[t,k]*betaP
+      
+      #Apply softmax function - turn Valence into probabiltiy of choice 
+      exp_p[t,k] <- exp(theta*EV[t,k])#put it into softmax - turn it into a choice prob - Luce's choice rule
+      
+    }
+    
+    for (k in 1:4){
+      p[t,k] <- exp_p[t,k]/sum(exp_p[t,]) #apply softmax function 
+    }
+    
+    x[t] ~ dcat(p[t,]) #choice is sample from categorical distribution of the four probability distributions (updated)
+    
+  }
+  
+}

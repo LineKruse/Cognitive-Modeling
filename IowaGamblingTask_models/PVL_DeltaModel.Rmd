@@ -1,0 +1,199 @@
+---
+title: "Untitled"
+author: "Line Kruse"
+date: "3/11/2020"
+output: html_document
+---
+
+```{r}
+library(pacman)
+set.seed(1982)
+p_load(extraDistr, R2jags)
+setwd("~/Documents/Advanced Cognitive Modeling /Exercise3 - Iowa Gambling Task")
+
+```
+
+#Set up task environment
+Four decks of the Iowa Gambling Task. 
+
+```{r}
+set.seed(1982)
+#Bad frequent deck 
+A_R <- rep(100,10) #reward for deck A (10 trials)
+A_L <- c(rep(-250,5),rep(0,5)) #Loss for deck A - 5/10 you get big loss, 5/10 you dont loose anything.
+
+#Bad infrequent deck
+B_R <- rep(100,10)
+B_L <- c(rep(-1200,1),rep(0,9)) #1/10 you get major loss, 9/10 you dont loose anything. 
+
+#Good frequent deck 
+C_R <- rep(50,10) 
+C_L <- c(rep(-50,5),rep(0,5)) 
+
+#Good infrequent deck
+D_R <- rep(50,10)
+D_L <- c(rep(-250,1),rep(0,9)) 
+
+#Shuffle decks and store them in arrays 
+#We only shuffle the Losses because the rewards are always the same in each deck 
+
+#Outcome of A 
+A <- c()
+for(i in 1:10){
+  A <- (append(A,A_R+sample(A_L)))
+}
+
+#Outcome of B
+B <- c()
+for(i in 1:10){
+  B <- (append(B,B_R+sample(B_L)))
+}
+
+#Outcome of C
+C <- c()
+for(i in 1:10){
+  C <- (append(C,C_R+sample(C_L)))
+}
+
+#Outcome of D
+D <- c()
+for(i in 1:10){
+  D <- (append(D,D_R+sample(D_L)))
+}
+
+#Assign these values to payoff matrix 
+payoff <- cbind(A,B,C,D)
+
+payoff <- payoff/100
+
+```
+
+#Build PVL-Delta model 
+THe model is build as a function in the "PVL_DeltaModel_Function.R" script. 
+
+```{r}
+#A prospect theoretic agent: 
+w <- 2 #loss aversion parameter
+A <- 0.5 #shape of utility function
+theta <- 0.9 #invearse temperature parameter 
+a <- 0.1 #learning rate 
+
+
+#Run model function 
+ntrials <- 100
+source(PVL_DeltaModel_Function.R)
+PVL_sims <- PVL(payoff, ntrials, w, A, a, theta)
+
+#Plot results 
+par(mfrow=c(2,2))
+plot(PVL_sims$Ev[,1])
+plot(PVL_sims$Ev[,2])
+plot(PVL_sims$Ev[,3])
+plot(PVL_sims$Ev[,4])
+
+#####Plot prospect theory function 
+w <- 2
+A <- 0.2
+
+#Positive utility function
+objectiveValue <- seq(1,100,1) #x-axis for plot 
+subjectiveUtility <- objectiveValue^A #y-axis 
+plot(objectiveValue,subjectiveUtility) #plots the utility function 
+# 
+# #Negative utility function (add loss aversion, w)
+# objectiveValue <- seq(1,100,1) #x-axis for plot 
+# subjectiveUtility <- -w*(objectiveValue^A) #y-axis 
+# plot(objectiveValue,subjectiveUtility) #plots the utility function 
+
+
+```
+
+
+#Run paramter recovery on the model 
+
+```{r}
+x <- PVL_sims$x
+X <- PVL_sims$X
+
+data <- list("x", "X", "ntrials")
+params <- c("w", "A", "theta", "a")
+
+samples <- jags.parallel(data, inits = NULL, params, 
+                         model.file = "PVL_DeltaModel_jags.txt", 
+                         n.chains =3, n.iter =5000, n.burnin = 1000, n.thin = 1)
+
+
+```
+
+#Parameter recovery 
+```{r}
+p_load(ggplot2)
+source("PVL_DeltaModel_Function.R")
+
+recPVL <- paramRecPVL(100, "PVL_DeltaModel_jags.txt")
+
+source("quick_n_clean_plots.R")
+p_w <- plot_actual_predicted(recPVL$trueW,recPVL$inferredW)
+
+p_A <- plot_actual_predicted(recPVL$trueA,recPVL$inferredA)
+
+p_theta <- plot_actual_predicted(recPVL$trueTheta,recPVL$inferredTheta)
+
+p_a <- plot_actual_predicted(recPVL$true_a,recPVL$inferred_a)
+
+
+paramRecPVL <- function(iterations, model){
+  trueW <- array(0, c(iterations))
+  inferredW <- array(0, c(iterations))
+  
+  trueA <- array(0, c(iterations))
+  inferredA <- array(0, c(iterations))
+  
+  trueTheta <- array(0, c(iterations))
+  inferredTheta <- array(0, c(iterations))
+  
+  true_a <- array(0, c(iterations))
+  inferred_a <- array(0, c(iterations))
+  
+  for (i in 1:iterations){
+    w <-runif(1,0,5)
+    A <-runif(1,0,1)
+    theta <- runif(1,0,5)
+    a <- runif(1,0,1)
+    
+    #Run function and extract respones 
+    PVL_sim <- PVL(payoff, ntrials, w, A, a, theta)
+    x <- PVL_sim$x
+    X <- PVL_sim$X
+    
+    #Run parameter inference 
+    data <- list("x", "X", "ntrials")
+    params <- c("w", "A", "theta", "a")
+
+    samples <- jags.parallel(data, inits = NULL, params, 
+                         model.file = "PVL_DeltaModel_jags.txt", 
+                         n.chains =3, n.iter =5000, n.burnin = 1000, n.thin = 1)
+    
+    #Record values 
+    trueW[i] <- w
+    trueA[i] <- A
+    trueTheta[i] <- theta
+    true_a[i] <- a
+    
+    post_w <- samples$BUGSoutput$sims.list$w
+    post_A <- samples$BUGSoutput$sims.list$A
+    post_theta <- samples$BUGSoutput$sims.list$theta
+    post_a <- samples$BUGSoutput$sims.list$a
+    
+    inferredW[i] <- density(post_w)$x[which(density(post_w)$y==max(density(post_w)$y))]
+    inferredA[i] <- density(post_A)$x[which(density(post_A)$y==max(density(post_A)$y))]
+    inferredTheta[i] <- density(post_theta)$x[which(density(post_theta)$y==max(density(post_theta)$y))]
+    inferred_a[i] <- density(post_a)$x[which(density(post_a)$y==max(density(post_a)$y))]
+  }
+  
+  return(list(trueW=trueW, inferredW=inferredW, trueA=trueA, inferredA=inferredA, trueTheta=trueTheta, inferredTheta=inferredTheta, true_a=true_a, inferred_a=inferred_a))
+  
+}
+
+
+```
