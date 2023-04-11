@@ -1,0 +1,133 @@
+---
+title: "ParamRec_EWA_model"
+author: "Line Kruse"
+date: "4/20/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+set.seed(1982)
+library(pacman)
+p_load(R2jags, polspline, extraDistr, ggplot2)
+```
+
+#Run parameter recovery - EWA model 
+
+```{r}
+
+recEWA <- paramRecEWA(100)
+save(recEWA, file="recEWA.Rdata")
+load("recEWA.Rdata")
+
+source("quick_n_clean_plots.R")
+p_delta_a1 <- plot_actual_predicted(recEWA$true$delta[1,],recEWA$MAP$delta[1,], title="A) Delta: S1")
+p_delta_a2 <- plot_actual_predicted(recEWA$true$delta[2,],recEWA$MAP$delta[2,], title="B) Delta: S2")
+p_delta_a3 <- plot_actual_predicted(recEWA$true$delta[3,],recEWA$MAP$delta[3,], title="C) Delta: S3")
+
+p_rho_a1 <- plot_actual_predicted(recEWA$true$rho[1,],recEWA$MAP$rho[1,], title="A) Rho: S1")
+p_rho_a2 <- plot_actual_predicted(recEWA$true$rho[2,],recEWA$MAP$rho[2,], title="B) Rho: S2")
+p_rho_a3 <- plot_actual_predicted(recEWA$true$rho[3,],recEWA$MAP$rho[3,], title="C) Rho: S3")
+
+p_phi_a1 <- plot_actual_predicted(recEWA$true$phi[1,],recEWA$MAP$phi[1,], title="A) Phi: S1")
+p_phi_a2 <- plot_actual_predicted(recEWA$true$phi[2,],recEWA$MAP$phi[2,], title="B) Phi: S2")
+p_phi_a3 <- plot_actual_predicted(recEWA$true$phi[3,],recEWA$MAP$phi[3,], title="C) Phi: S3")
+
+p_lambda_a1 <- plot_actual_predicted(recEWA$true$lambda[1,],recEWA$MAP$lambda[1,], title="A) Lambda: S1")
+p_lambda_a2 <- plot_actual_predicted(recEWA$true$lambda[2,],recEWA$MAP$lambda[2,], title="B) Lambda: S2")
+p_lambda_a3 <- plot_actual_predicted(recEWA$true$lambda[3,],recEWA$MAP$lambda[3,], title="C) Lambda: S3")
+
+
+```
+
+
+
+#Parameter recovery function - EWA model 
+
+```{r}
+paramRecEWA <- function(iterations){
+  #Simulation variables 
+  ntrials <- 10 #rounds in the game 
+  nagents <- 3 #size of the group 
+  ntokens <- 20 #how much each agent can contribute in each round 
+  #niterations <- 100 #how many times we run the simulation 
+  pi <- 1.5 #multiplication factor (in the public goods game)
+  
+  #Empty data frames to fill with true parameter values (randomly generated)
+  true <- c()
+  true$delta <- array(0, c(nagents, niterations)) #Discounting of imagined forgone outcomes 
+  true$rho <- array(0, c(nagents, niterations)) #depreciation of old attractions 
+  true$phi <- array(0, c(nagents, niterations)) #retention of old attractions 
+  true$lambda <- array(0, c(nagents, niterations)) #softmax inverse heat/consistency with attractions 
+  
+  #Emply data frame to fill with parameter estimates from the jags model 
+  MAP <- c()
+  MAP$delta <- array(0, c(nagents, niterations)) 
+  MAP$rho <- array(0, c(nagents, niterations))
+  MAP$phi <- array(0, c(nagents, niterations))
+  MAP$lambda <- array(0, c(nagents, niterations))
+  
+  for(i in 1:niterations){
+    
+    for(n in 1:nagents){
+    #Random draw of true parmaeter values 
+      true$delta[n,i] <- runif(1,0,1)
+      true$rho[n,i] <- runif(1,0,1)
+      true$phi[n,i] <- runif(1,0,1)
+      true$lambda[n,i] <- runif(1,0,5)
+    }
+    
+    #Load function and run forward simulations 
+    source("EWA_sim_function.R")
+    
+    parameters <- c()
+    parameters$delta <- true$delta[,i]
+    parameters$rho <- true$rho[,i]
+    parameters$phi <- true$phi[,i]
+    parameters$lambda <- true$lambda[,i]
+    
+    EWA_sims <- EWA_function(nagents, ntrials, ntokens, pi, parameters)
+    
+    c <- EWA_sims$c
+    
+    #Make arrays needed for EWA jags model
+    #Calculate others' contributions from contribution matrix c, to enter as data #Wach row vector for agent n represents the average of what the others contributed on the trial
+    #Used in attraction equation in jags instead of sum(c[-n,t-1], becuase no negative indexing in jags)
+    Gc <- array(0, c(nagents, ntrials))
+    for (n in 1:nagents){
+      Gc[n,] <- colSums(c[-n,])
+    }
+    
+    #Re-representation of contribution not as data but as model input, for attraction equation 
+    #List of choice for each agent 
+    c_choice_index <- c
+    
+    #Fit jags model to simulation data - do inference 
+    data <- list("nagents", "ntrials", "ntokens", "pi", "c", "Gc", "c_choice_index")
+    params <- c("delta", "rho", "phi", "lambda")
+    samples <- jags.parallel(data, inits=NULL, params,
+                             model.file ="EWA_model_jags.txt",
+                             n.chains=3, n.iter=5000, n.burnin=1000, n.thin=1)
+    
+    #Get poserior distributions
+    post_delta <- samples$BUGSoutput$sims.list$delta
+    post_rho  <- samples$BUGSoutput$sims.list$rho
+    post_phi <- samples$BUGSoutput$sims.list$phi
+    post_lambda <- samples$BUGSoutput$sims.list$lambda
+    
+    for(n in 1:nagents){
+    #Get MAP and store in output variable 
+      MAP$delta[n,i] <- density(post_delta[,n])$x[which(density(post_delta[,n])$y==max(density(post_delta[,n])$y))]
+      MAP$rho[n,i] <- density(post_rho[,n])$x[which(density(post_rho[,n])$y==max(density(post_rho[,n])$y))]
+      MAP$phi[n,i] <- density(post_phi[,n])$x[which(density(post_phi[,n])$y==max(density(post_phi[,n])$y))]
+      MAP$lambda[n,i] <- density(post_lambda[,n])$x[which(density(post_lambda[,n])$y==max(density(post_lambda[,n])$y))]
+    }
+    
+  }
+  
+  return(list(true=true, MAP=MAP))
+  }
+
+
+
+```
+
